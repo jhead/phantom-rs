@@ -1,3 +1,7 @@
+pub mod logger;
+
+pub use logger::{PhantomLogger, PhantomLoggerConfig};
+
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct PhantomOpts {
     pub server: String,
@@ -22,4 +26,12 @@ pub enum PhantomError {
     InvalidAddress(String),
     #[error("Phantom is already running")]
     AlreadyRunning,
+    #[error("Unable to configure Phantom logger: {0}")]
+    LoggerSetupFailed(String),
+}
+
+impl PhantomError {
+    pub fn from_error(error: impl std::error::Error) -> Self {
+        PhantomError::UnknownError(error.to_string())
+    }
 }

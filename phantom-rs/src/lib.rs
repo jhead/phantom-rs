@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use log::debug;
+use once_cell::sync::Lazy;
 use proxy::ProxyInstance;
 
 pub mod actor;
@@ -6,21 +9,42 @@ pub mod api;
 pub mod proto;
 pub mod proxy;
 
-pub use api::{PhantomError, PhantomOpts};
+pub use api::{PhantomError, PhantomLogger, PhantomLoggerConfig, PhantomOpts};
+use tokio::runtime::{Handle, Runtime};
 
 uniffi::setup_scaffolding!();
 
 #[derive(uniffi::Object)]
 pub struct Phantom {
-    instance: ProxyInstance,
+    instance: Arc<ProxyInstance>,
+    rt: Handle,
+}
+
+pub fn new_with_current_runtime(opts: PhantomOpts) -> Result<Phantom, PhantomError> {
+    let rt = tokio::runtime::Handle::current();
+    new_with_runtime(opts, &rt)
+}
+
+pub fn new_with_runtime(opts: PhantomOpts, rt: &Handle) -> Result<Phantom, PhantomError> {
+    let instance = Arc::new(ProxyInstance::new(opts)?);
+    Ok(Phantom {
+        instance,
+        rt: rt.clone(),
+    })
 }
 
 #[uniffi::export]
 impl Phantom {
     #[uniffi::constructor]
     pub fn new(opts: PhantomOpts) -> Result<Self, PhantomError> {
-        let instance = ProxyInstance::new(opts)?;
-        Ok(Phantom { instance })
+        static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+        });
+
+        new_with_runtime(opts, RUNTIME.handle())
     }
 
     pub async fn start(&self) -> Result<(), PhantomError> {
@@ -30,8 +54,13 @@ impl Phantom {
         }
 
         debug!("Starting Phantom instance...");
-        self.instance.listen().await?;
-        Ok(())
+
+        let instance = self.instance.clone();
+
+        self.rt
+            .spawn(async move { instance.listen().await })
+            .await
+            .map_err(PhantomError::from_error)?
     }
 
     pub async fn stop(&self) -> Result<(), PhantomError> {
@@ -41,8 +70,28 @@ impl Phantom {
         }
 
         debug!("Stopping Phantom instance...");
-        self.instance.shutdown().await?;
-        self.instance.wait().await;
+
+        let instance = self.instance.clone();
+
+        self.rt
+            .spawn(async move {
+                instance.shutdown().await?;
+                instance.wait().await;
+
+                Ok(())
+            })
+            .await
+            .map_err(PhantomError::from_error)?
+    }
+
+    pub fn set_logger(&self, logger: Box<dyn PhantomLogger>) -> Result<(), PhantomError> {
+        let config = PhantomLoggerConfig::new(logger);
+
+        log::set_boxed_logger(Box::new(config))
+            .map_err(|e| PhantomError::LoggerSetupFailed(e.to_string()))?;
+
+        log::set_max_level(log::LevelFilter::Debug);
+
         Ok(())
     }
 }

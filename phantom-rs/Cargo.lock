@@ -411,6 +411,7 @@ dependencies = [
  "bytes",
  "hex",
  "log",
+ "once_cell",
  "thiserror",
  "tokio",
  "uniffi",

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use clap::{command, Parser};
 use log::{error, info};
-use phantom_rs::{Phantom, PhantomOpts};
+use phantom_rs::PhantomOpts;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
 
 #[derive(Parser, Debug)]
@@ -57,7 +57,9 @@ async fn main() {
     );
 
     info!("Starting Phantom with options: {:?}", opts);
-    let phantom = Arc::new(Phantom::new(opts).expect("Failed to create Phantom instance"));
+    let phantom = Arc::new(
+        phantom_rs::new_with_current_runtime(opts).expect("Failed to create Phantom instance"),
+    );
 
     // Catch ctrl-c to stop Phantom gracefully
     let phantom_for_shutdown = phantom.clone();

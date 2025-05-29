@@ -170,7 +170,6 @@ async fn socket_pipe_to_router(
                         break;
                     }
                 }
-                break;
             }
         }
     }
