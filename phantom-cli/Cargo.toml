@@ -9,3 +9,4 @@ clap = { version = "4.5.4", features = ["derive"] }
 simplelog = "0.12.2"
 log = "0.4.27"
 tokio = "1.45.1"
+tokio-util = "0.7.15"

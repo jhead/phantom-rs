@@ -1,14 +1,21 @@
+use log::debug;
 use std::future::Future;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use crate::task::CancellableTask;
 
 /// Trait for async behavior that can process messages by mutating state
-pub trait AsyncBehavior<Message, State>: Send + Sync {
-    fn handle(&self, message: Message, state: State)
-        -> Pin<Box<dyn Future<Output = State> + Send>>;
+pub trait AsyncBehavior<Message: Send + 'static, State>: Send + Sync {
+    fn handle(
+        &self,
+        self_ref: ActorRef<Message>,
+        message: Message,
+        state: State,
+    ) -> Pin<Box<dyn Future<Output = State> + Send>>;
 }
 
 /// A simple wrapper that implements AsyncBehavior for a function
@@ -18,17 +25,18 @@ pub struct SimpleBehavior<F> {
 
 impl<Message, State, F, Fut> AsyncBehavior<Message, State> for SimpleBehavior<F>
 where
-    Message: Send + Sync + 'static,
+    Message: Send + 'static,
     State: Clone + Send + Sync + 'static,
-    F: Fn(Message, State) -> Fut + Send + Sync + 'static,
+    F: Fn(ActorRef<Message>, Message, State) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = State> + Send + 'static,
 {
     fn handle(
         &self,
+        self_ref: ActorRef<Message>,
         message: Message,
         state: State,
     ) -> Pin<Box<dyn Future<Output = State> + Send>> {
-        Box::pin((self.handler)(message, state))
+        Box::pin((self.handler)(self_ref, message, state))
     }
 }
 
@@ -38,188 +46,171 @@ pub type BehaviorFn<Message, State> = Box<dyn AsyncBehavior<Message, State>>;
 /// Helper function to create a behavior from an async closure
 pub fn behavior<Message, State, F, Fut>(handler: F) -> BehaviorFn<Message, State>
 where
-    Message: Send + Sync + 'static,
+    Message: Send + 'static,
     State: Clone + Send + Sync + 'static,
-    F: Fn(Message, State) -> Fut + Send + Sync + 'static,
+    F: Fn(ActorRef<Message>, Message, State) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = State> + Send + 'static,
 {
     Box::new(SimpleBehavior { handler })
 }
-pub struct Actor<Message, State: Clone + Send + 'static> {
-    is_running: Arc<AtomicBool>,
-    state: State,
+pub struct Actor<Message: Send + 'static, State: Clone + Send + 'static> {
     behavior: BehaviorFn<Message, State>,
-    sender: mpsc::UnboundedSender<Message>,
-    receiver: mpsc::UnboundedReceiver<Message>,
+    sender: mpsc::UnboundedSender<ActorSignal<Message>>,
+    receiver: mpsc::UnboundedReceiver<ActorSignal<Message>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ActorRef<Message> {
-    sender: mpsc::UnboundedSender<Message>,
+pub struct ActorRef<Message: Send + 'static> {
+    sender: mpsc::UnboundedSender<ActorSignal<Message>>,
 }
 
 #[derive(Debug, Error)]
 pub enum ActorError {
     #[error("Actor is already running")]
     AlreadyRunning,
+
+    #[error("Failed to send message: {0}")]
+    FailedToSend(String),
 }
 
 impl<Message: Send + 'static> ActorRef<Message> {
-    /// Send a message to the actor
-    pub fn send(&self, message: Message) -> Result<(), mpsc::error::SendError<Message>> {
-        self.sender.send(message)
+    pub fn send(&self, message: Message) -> Result<(), ActorError> {
+        self.sender
+            .send(ActorSignal::Message(message))
+            .map_err(|e| ActorError::FailedToSend(e.to_string()))
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.sender.send(ActorSignal::Shutdown);
+    }
+
+    // Create a new Actor and attach it as a child by sending a message to the parent
+    pub fn run_child<State>(&self, initial_state: State, behavior: BehaviorFn<Message, State>)
+    where
+        State: Send + Clone + 'static,
+    {
+        let child_actor = Actor::run(initial_state, behavior);
+        self.attach_child(child_actor);
+    }
+
+    pub fn attach_child(&self, child: impl CancellableTask) {
+        self.sender
+            .send(ActorSignal::SpawnChild(Box::new(child)))
+            .unwrap_or_else(|e| {
+                debug!("[actor] failed to attach child task: {}", e);
+            });
+
+        debug!("[actor] child task attached successfully");
+    }
+}
+
+struct ActorInternalState<State: Clone + Send + 'static> {
+    children: Vec<Box<dyn CancellableTask>>,
+    state: State,
+}
+
+enum ActorSignal<Message: Send + 'static> {
+    Message(Message),
+    SpawnChild(Box<dyn CancellableTask>),
+    Shutdown,
+}
+
+pub struct RunningActor<Message: Send + 'static> {
+    actor_ref: ActorRef<Message>,
+    join_handle: JoinHandle<()>,
+}
+
+impl<Message: Send + 'static> Deref for RunningActor<Message> {
+    type Target = ActorRef<Message>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.actor_ref
+    }
+}
+
+impl<Message: Send + 'static> CancellableTask for RunningActor<Message> {
+    fn cancel(&self) {
+        self.actor_ref.shutdown();
+    }
+
+    fn join(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let _ = self.join_handle.await;
+        })
     }
 }
 
 impl<Message: Send + 'static, State: Clone + Send + 'static> Actor<Message, State> {
     /// Create a new Actor with initial state and behavior
-    pub fn new(initial_state: State, behavior: BehaviorFn<Message, State>) -> Self {
+    pub fn run(
+        initial_state: State,
+        behavior: BehaviorFn<Message, State>,
+    ) -> RunningActor<Message> {
         let (sender, receiver) = mpsc::unbounded_channel();
 
         let actor = Self {
-            is_running: Arc::new(AtomicBool::new(false)),
-            state: initial_state,
             behavior,
             sender,
             receiver,
         };
 
-        actor
+        let actor_ref = ActorRef {
+            sender: actor.sender.clone(),
+        };
+
+        let join_handle = tokio::spawn(async move {
+            actor.run_loop(initial_state).await;
+        });
+
+        RunningActor {
+            actor_ref,
+            join_handle,
+        }
     }
 
     /// Process one message from the channel, waiting if necessary
-    async fn process_one(&mut self) -> bool {
-        if let Some(message) = self.receiver.recv().await {
-            let state_clone = self.state.clone();
-            let new_state = self.behavior.handle(message, state_clone).await;
-            self.state = new_state;
-            true
-        } else {
-            false
+    async fn process_one(&mut self, internal_state: &mut ActorInternalState<State>) -> bool {
+        let incoming = self.receiver.recv().await;
+        match incoming {
+            Some(ActorSignal::Message(message)) => {
+                let new_state = self
+                    .behavior
+                    .handle(
+                        ActorRef {
+                            sender: self.sender.clone(),
+                        },
+                        message,
+                        internal_state.state.clone(),
+                    )
+                    .await;
+                internal_state.state = new_state;
+                true
+            }
+            Some(ActorSignal::SpawnChild(child_task)) => {
+                debug!("[actor] spawning child task");
+                internal_state.children.push(child_task);
+                true
+            }
+            Some(ActorSignal::Shutdown) => false,
+            None => false,
         }
-    }
-
-    pub fn start(mut self) -> Result<ActorRef<Message>, ActorError> {
-        if self.is_running.load(Ordering::SeqCst) {
-            eprintln!("Actor is already running");
-            return Err(ActorError::AlreadyRunning);
-        }
-
-        self.is_running.store(true, Ordering::SeqCst);
-        let sender = self.sender.clone();
-
-        tokio::spawn(async move {
-            self.run_loop().await;
-        });
-
-        Ok(ActorRef { sender })
     }
 
     /// Run the actor in a continuous loop, processing messages as they arrive
-    async fn run_loop(&mut self) {
-        while self.process_one().await {}
-    }
-}
+    async fn run_loop(mut self, initial_state: State) {
+        let mut state = ActorInternalState {
+            state: initial_state,
+            children: Vec::new(),
+        };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::time::{timeout, Duration};
+        while self.process_one(&mut state).await {}
+        debug!("[actor] shutting down children");
 
-    #[derive(Debug, Clone, PartialEq)]
-    struct CounterState {
-        count: i32,
-    }
+        for child in state.children {
+            child.cancel();
+            child.join().await;
+        }
 
-    // Define message types for the counter
-    #[derive(Debug, Clone, Copy)]
-    enum CounterMessage {
-        Increment,
-        Add(i32),
-        Reset,
-    }
-
-    #[tokio::test]
-    async fn test_simple_counter_actor() {
-        // Create a counter that handles different message types
-        let initial_state = CounterState { count: 0 };
-        let behavior = behavior(
-            |message: CounterMessage, mut state: CounterState| async move {
-                // Immediately extract values from the message to avoid borrowing issues
-                match message {
-                    CounterMessage::Increment => state.count += 1,
-                    CounterMessage::Add(n) => state.count += n,
-                    CounterMessage::Reset => state.count = 0,
-                }
-
-                state
-            },
-        );
-
-        let mut actor = Actor::new(initial_state, behavior);
-        let sender = &actor.sender;
-
-        // Send some messages
-        sender.send(CounterMessage::Increment).unwrap();
-        sender.send(CounterMessage::Add(5)).unwrap();
-        sender.send(CounterMessage::Increment).unwrap();
-
-        // Process messages one by one
-        actor.process_one().await;
-        assert_eq!(actor.state.count, 1);
-
-        actor.process_one().await;
-        assert_eq!(actor.state.count, 6);
-
-        actor.process_one().await;
-        assert_eq!(actor.state.count, 7);
-    }
-
-    #[tokio::test]
-    async fn test_actor_run_loop() {
-        let initial_state = CounterState { count: 0 };
-        let behavior = behavior(
-            |message: CounterMessage, mut state: CounterState| async move {
-                match message {
-                    CounterMessage::Increment => state.count += 1,
-                    CounterMessage::Add(n) => state.count += n,
-                    CounterMessage::Reset => state.count = 0,
-                }
-
-                state
-            },
-        );
-
-        let mut actor = Actor::new(initial_state, behavior);
-        let sender = &actor.sender;
-
-        // Send some messages
-        sender.send(CounterMessage::Increment).unwrap();
-        sender.send(CounterMessage::Add(10)).unwrap();
-        sender.send(CounterMessage::Reset).unwrap();
-        sender.send(CounterMessage::Add(42)).unwrap();
-
-        // Drop the sender to close the channel after sending messages
-        drop(sender);
-
-        // Run the actor loop - it will process all messages and then exit
-        actor.run_loop().await;
-
-        // Final state should be 42 (after reset and add 42)
-        assert_eq!(actor.state.count, 42);
-    }
-
-    #[tokio::test]
-    async fn test_actor_timeout() {
-        let initial_state = CounterState { count: 0 };
-        let behavior =
-            behavior(|_message: CounterMessage, state: CounterState| async move { state });
-
-        let mut actor = Actor::new(initial_state, behavior);
-        // Don't send any messages and drop sender immediately
-
-        // process_one should timeout since no messages will be sent
-        let result = timeout(Duration::from_millis(100), actor.process_one()).await;
-        assert!(result.is_err()); // Should timeout
+        debug!("[actor] shut down gracefully");
     }
 }

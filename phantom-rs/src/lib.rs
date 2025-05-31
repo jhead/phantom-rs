@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use api::unknown_error;
 use log::debug;
 use once_cell::sync::Lazy;
 use proxy::ProxyInstance;
@@ -8,6 +9,7 @@ pub mod actor;
 pub mod api;
 pub mod proto;
 pub mod proxy;
+pub mod task;
 
 pub use api::{PhantomError, PhantomLogger, PhantomLoggerConfig, PhantomOpts};
 use tokio::runtime::{Handle, Runtime};
@@ -58,9 +60,13 @@ impl Phantom {
         let instance = self.instance.clone();
 
         self.rt
-            .spawn(async move { instance.listen().await })
+            .spawn(async move {
+                instance.listen().await?;
+                instance.join().await;
+                Ok(())
+            })
             .await
-            .map_err(PhantomError::from_error)?
+            .map_err(unknown_error)?
     }
 
     pub async fn stop(&self) -> Result<(), PhantomError> {
@@ -76,12 +82,10 @@ impl Phantom {
         self.rt
             .spawn(async move {
                 instance.shutdown().await?;
-                instance.wait().await;
-
                 Ok(())
             })
             .await
-            .map_err(PhantomError::from_error)?
+            .map_err(unknown_error)?
     }
 
     pub fn set_logger(&self, logger: Box<dyn PhantomLogger>) -> Result<(), PhantomError> {

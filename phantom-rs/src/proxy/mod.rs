@@ -1,38 +1,34 @@
 mod router;
+mod socket;
 
-use bytes::Bytes;
 use log::{debug, error, info};
+use socket::{read_cancellable, CancellablePacketReader};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{broadcast, Mutex, Notify};
-use tokio::task::JoinHandle;
+use tokio::sync::Notify;
 
 use crate::actor::ActorRef;
 use crate::api::{PhantomError, PhantomOpts};
-use router::{Router, RouterMessage};
+use crate::task::TaskManager;
+use router::{create_router, Router, RouterMessage};
 
 #[derive(uniffi::Object)]
 pub struct ProxyInstance {
     running: AtomicBool,
     opts: PhantomOpts,
-    shutdown_tx: broadcast::Sender<()>,
-    notify_on_shutdown: Notify,
-    tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    manager: TaskManager,
+    notify_shutdown: Notify,
 }
 
 impl ProxyInstance {
     pub fn new(opts: PhantomOpts) -> Result<Self, PhantomError> {
-        let (shutdown_tx, _) = broadcast::channel(1);
-        let notify_on_shutdown = Notify::new();
-
         Ok(ProxyInstance {
             running: AtomicBool::new(false),
             opts,
-            shutdown_tx,
-            notify_on_shutdown,
-            tasks: Arc::new(Mutex::new(Vec::new())),
+            manager: TaskManager::new(),
+            notify_shutdown: Notify::new(),
         })
     }
 
@@ -48,18 +44,7 @@ impl ProxyInstance {
         let remote_server = resolve_remote_address(&self.opts.server).await?;
         self.start_listeners(remote_server).await?;
 
-        self.handle_shutdown().await;
         Ok(())
-    }
-
-    pub async fn wait(&self) {
-        if !self.is_running() {
-            debug!("Phantom instance is not running, nothing to wait for");
-            return;
-        }
-
-        debug!("Waiting for Phantom instance to shut down...");
-        self.notify_on_shutdown.notified().await;
     }
 
     async fn start_listeners(&self, remote_addr: SocketAddr) -> Result<(), PhantomError> {
@@ -79,108 +64,53 @@ impl ProxyInstance {
 
         let proxy_port = proxy_local_addr.port();
 
-        let router = Router::new(remote_addr, proxy_port)
-            .map_err(|e| PhantomError::FailedToStart(e.to_string()))?;
-
+        let router = create_router(remote_addr, proxy_port);
         self.spawn_socket_reader(broadcast_socket, &router).await;
         self.spawn_socket_reader(proxy_socket, &router).await;
+        self.manager.add_task(router);
 
         Ok(())
     }
 
-    async fn spawn_socket_reader(&self, socket: Arc<UdpSocket>, router: &Router) {
-        let router_ref = router.actor_ref.clone();
-        let shutdown_rx = self.shutdown_tx.subscribe();
+    async fn spawn_socket_reader(&self, socket: UdpSocket, router: &Router) {
+        let task = socket_pipe_to_router(socket, router);
+        self.manager.add_task(task);
+    }
 
-        let task = tokio::spawn(async move {
-            socket_pipe_to_router(socket, router_ref, shutdown_rx).await;
-        });
-
-        let mut tasks = self.tasks.lock().await;
-        tasks.push(task);
+    pub async fn join(&self) {
+        self.notify_shutdown.notified().await;
+        debug!("All tasks completed");
     }
 
     pub async fn shutdown(&self) -> Result<(), PhantomError> {
-        // Notify all tasks to shut down
-        self.shutdown_tx
-            .send(())
-            .map_err(|e| PhantomError::UnknownError(e.to_string()))?;
-
         debug!("Shutdown signal sent to all tasks");
-        Ok(())
-    }
-
-    async fn handle_shutdown(&self) {
-        self.shutdown_tx.subscribe().recv().await.ok();
-        debug!("Phantom received shutdown request");
-
-        let mut tasks = self.tasks.lock().await;
-        let mut task_count = tasks.len();
-
-        for task in tasks.drain(..) {
-            info!(
-                "Waiting for all tasks to complete... ({} tasks running)",
-                task_count
-            );
-
-            let _ = task.await;
-            task_count -= 1;
-        }
-
+        self.manager.shutdown().await;
         self.running.store(false, Ordering::SeqCst);
-        info!("All tasks completed, Phantom instance shut down successfully");
-
-        self.notify_on_shutdown.notify_waiters();
+        self.notify_shutdown.notify_waiters();
+        Ok(())
     }
 }
 
-async fn socket_pipe_to_router(
-    socket: Arc<UdpSocket>,
-    router: ActorRef<RouterMessage>,
-    mut shutdown_rx: broadcast::Receiver<()>,
-) {
-    let mut buf = vec![0; 1024];
+fn socket_pipe_to_router(
+    socket: UdpSocket,
+    router: &ActorRef<RouterMessage>,
+) -> CancellablePacketReader {
+    let socket: Arc<UdpSocket> = Arc::new(socket);
+    let router = router.clone();
 
-    loop {
-        // select either socket or shutdown signal
-        tokio::select! {
-            _ = shutdown_rx.recv() => {
-                info!("Shutdown signal received, stopping socket read loop.");
-                break;
-            }
-            read_res = socket.recv_from(&mut buf) => {
-                match read_res {
-                    Ok((len, client_addr)) => {
-                        let data = &buf[..len];
-                        debug!(
-                            "[socket-read] Received {} bytes from {} packet ID {}",
-                            len, client_addr, data[0]
-                        );
-
-                        router
-                            .send(RouterMessage::PacketFromClient {
-                                data: Bytes::from(data.to_vec()),
-                                client_addr,
-                                to_client: socket.clone(),
-                            })
-                            .unwrap_or_else(|e| error!("Error sending message to router: {}", e));
-                    }
-                    Err(e) => {
-                        error!("Error receiving data: {}", e);
-                        break;
-                    }
-                }
-            }
+    read_cancellable(socket.clone(), move |packet| {
+        let router = router.clone();
+        let socket = socket.clone();
+        async move {
+            router
+                .send(RouterMessage::PacketFromClient {
+                    data: packet.data,
+                    client_addr: packet.client_addr,
+                    to_client: socket,
+                })
+                .unwrap_or_else(|e| error!("Error sending message to router: {}", e));
         }
-    }
-
-    info!(
-        "Socket {} shut down",
-        socket
-            .local_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
-    );
+    })
 }
 
 async fn resolve_remote_address(server: &str) -> Result<SocketAddr, PhantomError> {
@@ -193,10 +123,9 @@ async fn resolve_remote_address(server: &str) -> Result<SocketAddr, PhantomError
         ))
 }
 
-async fn bind_socket(bind: &str, port: u16) -> Result<Arc<UdpSocket>, PhantomError> {
+async fn bind_socket(bind: &str, port: u16) -> Result<UdpSocket, PhantomError> {
     let addr = format!("{}:{}", bind, port);
     UdpSocket::bind(&addr)
         .await
         .map_err(|e| PhantomError::FailedToBind(e.to_string()))
-        .map(Arc::new)
 }

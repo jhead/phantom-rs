@@ -49,8 +49,14 @@ async fn main() {
         ipv6: args.ipv6,
     };
 
+    let log_level = if opts.debug {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+
     let _ = TermLogger::init(
-        LevelFilter::Debug,
+        log_level,
         simplelog::Config::default(),
         TerminalMode::Mixed,
         ColorChoice::Always,
@@ -64,12 +70,14 @@ async fn main() {
     // Catch ctrl-c to stop Phantom gracefully
     let phantom_for_shutdown = phantom.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("Ctrl-C received, stopping Phantom...");
-        phantom_for_shutdown
-            .stop()
-            .await
-            .expect("Failed to stop Phantom");
+        loop {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Ctrl-C received, stopping Phantom...");
+            phantom_for_shutdown
+                .stop()
+                .await
+                .expect("Failed to stop Phantom");
+        }
     });
 
     if let Err(e) = phantom.start().await {

@@ -16,22 +16,26 @@ pub struct PhantomOpts {
 pub enum PhantomError {
     #[error("Phantom encountered an error: {0}")]
     UnknownError(String),
+
     #[error("Failed to bind to address: {0}")]
     FailedToBind(String),
+
     #[error("Phantom failed to start: {0}")]
     FailedToStart(String),
+
     #[error("Phantom encountered an IO error: {0}")]
     IoError(String),
-    #[error("Uneable to resolve remote address: {0}")]
+
+    #[error("Unable to resolve remote address: {0}")]
     InvalidAddress(String),
+
     #[error("Phantom is already running")]
     AlreadyRunning,
+
     #[error("Unable to configure Phantom logger: {0}")]
     LoggerSetupFailed(String),
 }
 
-impl PhantomError {
-    pub fn from_error(error: impl std::error::Error) -> Self {
-        PhantomError::UnknownError(error.to_string())
-    }
+pub fn unknown_error(error: impl std::error::Error) -> PhantomError {
+    PhantomError::UnknownError(error.to_string())
 }
