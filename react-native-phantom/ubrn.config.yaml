@@ -1,0 +1,3 @@
+rust:
+  directory: ../phantom-rs
+  manifestPath: Cargo.toml

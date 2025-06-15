@@ -11,3 +11,5 @@ phantom-go
 *.a
 *.dylib
 *.d
+
+node_modules/
