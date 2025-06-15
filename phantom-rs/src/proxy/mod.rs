@@ -48,7 +48,7 @@ impl ProxyInstance {
     }
 
     async fn start_listeners(&self, remote_addr: SocketAddr) -> Result<(), PhantomError> {
-        let broadcast_socket = bind_socket(&self.opts.bind, 19132).await?;
+        let broadcast_socket = bind_socket_reuse(&self.opts.bind, 19132).await?;
         let broadcast_local_addr = broadcast_socket
             .local_addr()
             .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
@@ -121,6 +121,38 @@ async fn resolve_remote_address(server: &str) -> Result<SocketAddr, PhantomError
         .ok_or(PhantomError::InvalidAddress(
             "Remote server address not found".to_string(),
         ))
+}
+
+async fn bind_socket_reuse(bind: &str, port: u16) -> Result<UdpSocket, PhantomError> {
+    let addr: SocketAddr = format!("{}:{}", bind, port).parse().unwrap();
+
+    // TODO: Support ipv6
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
+
+    socket
+        .set_reuse_port(true)
+        .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
+
+    socket
+        .set_reuse_address(true)
+        .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
+
+    socket
+        .set_nonblocking(true)
+        .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
+
+    socket
+        .bind(&addr.into())
+        .map_err(|e| PhantomError::FailedToBind(e.to_string()))?;
+
+    let socket_std = std::net::UdpSocket::from(socket);
+
+    UdpSocket::from_std(socket_std).map_err(|e| PhantomError::FailedToBind(e.to_string()))
 }
 
 async fn bind_socket(bind: &str, port: u16) -> Result<UdpSocket, PhantomError> {
