@@ -82,6 +82,8 @@ lib/
 ios/generated
 android/generated
 cpp/generated
+*.podspec
+*.xcframework
 
 # React Native Nitro Modules
 nitrogen/
