@@ -39,7 +39,7 @@
     "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
     "prepare": "bob build",
     "release": "release-it --only-version",
-    "ubrn:ios": "ubrn build ios --and-generate && (cd ../app/PhantomApp/ios && pod install)",
+    "ubrn:ios": "ubrn build ios --and-generate && (cd ../app/ios && pod install)",
     "ubrn:android": "ubrn build android --and-generate",
     "ubrn:web": "ubrn build web",
     "ubrn:checkout": "ubrn checkout",
