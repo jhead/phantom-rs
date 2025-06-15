@@ -11,18 +11,21 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
 } from 'react-native';
-import {useSetAtom} from 'jotai';
 import {styles} from './ServersScreen.styles';
-import {Server, addServerAtom} from '../atoms/servers';
+import {Server} from '../services/serverState';
 
 interface AddServerModalProps {
   visible: boolean;
   onClose: () => void;
+  addServer: (
+    server: Omit<Server, 'status' | 'data' | 'autoStart'>,
+  ) => Promise<void>;
 }
 
 export const AddServerModal: React.FC<AddServerModalProps> = ({
   visible,
   onClose,
+  addServer,
 }) => {
   const [name, setName] = useState('MC Complex');
   const [address, setAddress] = useState('mps.mc-complex.com');
@@ -34,7 +37,6 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
   }>({});
   const translateY = new Animated.Value(Dimensions.get('window').height);
   const opacityAnim = new Animated.Value(0);
-  const addServer = useSetAtom(addServerAtom);
 
   const validateForm = () => {
     const newErrors: typeof errors = {};
@@ -56,27 +58,37 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!validateForm()) {
       return;
     }
 
-    const newServer: Omit<Server, 'status' | 'data'> = {
+    const newServer: Omit<Server, 'status' | 'data' | 'autoStart'> = {
       id: Date.now().toString(),
       name: name.trim(),
       address: address.trim(),
       port: port.trim(),
     };
 
-    addServer(newServer);
-    console.log('Saving server:', newServer);
+    try {
+      console.log('Adding server:', newServer, addServer);
+      await addServer(newServer);
+      console.log('Server added successfully:', newServer);
 
-    // Reset form and close modal
-    setName('MC Complex');
-    setAddress('mps.mc-complex.com');
-    setPort('19132');
-    setErrors({});
-    onClose();
+      // Reset form and close modal
+      setName('MC Complex');
+      setAddress('mps.mc-complex.com');
+      setPort('19132');
+      setErrors({});
+      onClose();
+    } catch (error) {
+      console.error('Failed to add server:', error);
+      setErrors(prev => ({
+        ...prev,
+        address:
+          'Failed to connect to server. Please check the address and try again.',
+      }));
+    }
   };
 
   const handleDismiss = () => {
