@@ -2,6 +2,8 @@
 
 WIP rust port of [jhead/phantom](https://github.com/jhead/phantom) + mobile apps for iOS and Android
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
+
 ## CLI
 
 ```
