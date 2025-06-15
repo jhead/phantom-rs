@@ -7,6 +7,7 @@ export interface ServerData {
   maxPlayers: number;
   motd: [string, string];
   icon?: string;
+  lastPing?: number; // Unix timestamp in milliseconds
 }
 
 export interface Server {
@@ -47,7 +48,7 @@ export const updateServerDataAtom = atom(
           ? {
               ...server,
               data,
-              status: 'online',
+              status: 'online' as ServerStatus,
             }
           : server,
       ),

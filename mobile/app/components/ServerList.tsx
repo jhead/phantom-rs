@@ -1,9 +1,11 @@
-import React, {useEffect} from 'react';
+import React, {useEffect, useRef} from 'react';
 import {View, Text, FlatList, TouchableOpacity} from 'react-native';
 import {useAtom, useSetAtom} from 'jotai';
 import {serversAtom, Server, ServerStatus} from '../atoms/servers';
 import {managePhantomInstanceAtom} from '../atoms/phantom';
 import {styles} from './ServersScreen.styles';
+import {startPingService, stopPingService} from '../services/serverPing';
+import {updateServerDataAtom, updateServerStatusAtom} from '../atoms/servers';
 
 const StatusIndicator: React.FC<{status: ServerStatus}> = ({status}) => {
   const getStatusColor = () => {
@@ -94,9 +96,60 @@ const MOTD: React.FC<{motd?: [string, string]}> = ({motd}) => {
   );
 };
 
+const LastUpdated: React.FC<{timestamp?: number}> = ({timestamp}) => {
+  const [relativeTime, setRelativeTime] = React.useState<string>('');
+
+  React.useEffect(() => {
+    if (!timestamp) return;
+
+    const updateTime = () => {
+      const now = Date.now();
+      const diff = now - timestamp;
+      const seconds = Math.floor(diff / 1000);
+
+      if (seconds < 60) {
+        setRelativeTime(`${seconds}s ago`);
+      } else {
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) {
+          setRelativeTime(`${minutes}m ago`);
+        } else {
+          const hours = Math.floor(minutes / 60);
+          if (hours < 24) {
+            setRelativeTime(`${hours}h ago`);
+          } else {
+            const days = Math.floor(hours / 24);
+            setRelativeTime(`${days}d ago`);
+          }
+        }
+      }
+    };
+
+    // Update immediately
+    updateTime();
+
+    // Then update every second
+    const interval = setInterval(updateTime, 1000);
+
+    return () => clearInterval(interval);
+  }, [timestamp]);
+
+  if (!timestamp) {
+    return (
+      <View style={styles.lastUpdatedPlaceholder}>
+        <View style={styles.lastUpdatedSkeleton} />
+      </View>
+    );
+  }
+
+  return <Text style={styles.lastUpdated}>Updated {relativeTime}</Text>;
+};
+
 export const ServerList: React.FC = () => {
   const [servers] = useAtom(serversAtom);
   const managePhantomInstance = useSetAtom(managePhantomInstanceAtom);
+  const updateServerData = useSetAtom(updateServerDataAtom);
+  const updateServerStatus = useSetAtom(updateServerStatusAtom);
 
   // Start Phantom instances for new servers
   useEffect(() => {
@@ -104,6 +157,7 @@ export const ServerList: React.FC = () => {
       for (const server of servers) {
         if (server.status === 'connecting') {
           try {
+            console.log(`Starting Phantom instance for server ${server.id}`);
             await managePhantomInstance({server, action: 'start'});
           } catch (error) {
             console.error(
@@ -118,25 +172,40 @@ export const ServerList: React.FC = () => {
     startPhantomInstances();
   }, [servers, managePhantomInstance]);
 
-  // Cleanup Phantom instances when servers are removed
+  // Cleanup Phantom instances when component unmounts
   useEffect(() => {
     return () => {
       const cleanupPhantomInstances = async () => {
+        console.log('Cleaning up Phantom instances on unmount');
         for (const server of servers) {
-          try {
-            await managePhantomInstance({server, action: 'stop'});
-          } catch (error) {
-            console.error(
-              `Failed to stop Phantom instance for server ${server.id}:`,
-              error,
-            );
+          if (server.status === 'connecting') {
+            try {
+              console.log(`Stopping Phantom instance for server ${server.id}`);
+              await managePhantomInstance({server, action: 'stop'});
+            } catch (error) {
+              console.error(
+                `Failed to stop Phantom instance for server ${server.id}:`,
+                error,
+              );
+            }
           }
         }
       };
 
       cleanupPhantomInstances();
     };
-  }, [servers, managePhantomInstance]);
+  }, []); // Empty dependency array means this only runs on unmount
+
+  // Start ping service on mount
+  useEffect(() => {
+    startPingService(servers, updateServerData, updateServerStatus);
+    return () => stopPingService();
+  }, []); // Empty dependency array - service manages its own state
+
+  // Update ping service when server list changes
+  useEffect(() => {
+    startPingService(servers, updateServerData, updateServerStatus);
+  }, [servers]); // Only update when server list changes
 
   const renderServer = ({item}: {item: Server}) => (
     <TouchableOpacity style={styles.serverItem}>
@@ -151,10 +220,13 @@ export const ServerList: React.FC = () => {
         <StatusIndicator status={item.status} />
       </View>
       <View style={styles.serverDetails}>
-        <PlayerCount
-          players={item.data?.players}
-          maxPlayers={item.data?.maxPlayers}
-        />
+        <View style={styles.serverStats}>
+          <PlayerCount
+            players={item.data?.players}
+            maxPlayers={item.data?.maxPlayers}
+          />
+          <LastUpdated timestamp={item.data?.lastPing} />
+        </View>
         <MOTD motd={item.data?.motd} />
       </View>
     </TouchableOpacity>

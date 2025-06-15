@@ -180,7 +180,28 @@ export const styles = StyleSheet.create({
   },
   serverDetails: {
     marginTop: 8,
+  },
+  serverStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  lastUpdated: {
+    fontSize: 12,
+    color: '#666',
+  },
+  lastUpdatedPlaceholder: {
+    height: 12,
+    width: 80,
+    backgroundColor: '#eee',
+    borderRadius: 4,
+  },
+  lastUpdatedSkeleton: {
+    height: '100%',
     width: '100%',
+    backgroundColor: '#ddd',
+    borderRadius: 4,
   },
   statusIndicator: {
     width: 12,
