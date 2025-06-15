@@ -79,13 +79,12 @@ android/keystores/debug.keystore
 lib/
 
 # React Native Codegen
-ios/generated
 android/generated
 *.podspec
 *.xcframework
 cpp/
 src/
-ios/*.{h,m,mm}
+ios/
 
 # React Native Nitro Modules
 nitrogen/
