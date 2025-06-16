@@ -202,10 +202,62 @@ class ServerStateService {
       autoStart,
     };
 
+    // Persist to storage
     await this.persistServers();
+
+    // Notify callbacks
+    this.notifyCallbacks();
+  }
+
+  // Update a server's details
+  async updateServer(
+    serverId: string,
+    updates: Partial<Omit<Server, 'id' | 'status' | 'data'>>,
+  ): Promise<void> {
+    this.logger.info('Updating server:', serverId, updates);
+
+    const serverIndex = this.currentServers.findIndex(s => s.id === serverId);
+    if (serverIndex === -1) {
+      this.logger.warn('Server not found for update:', serverId);
+      return;
+    }
+
+    const server = this.currentServers[serverIndex];
+    const updatedServer = {
+      ...server,
+      ...updates,
+    };
+
+    console.log('Updating server:', serverId, updates, server, updatedServer);
+
+    // Stop existing phantom instance
+    await this.stopPhantomInstance(server);
+
+    // Update server in current servers
+    this.currentServers[serverIndex] = updatedServer;
+
+    // Persist to storage
+    await this.persistServers();
+
+    // Notify callbacks
     this.notifyCallbacks();
 
-    this.logger.info('Updated server auto-start:', serverId, autoStart);
+    try {
+      // Start new phantom instance
+      await this.startPhantomInstance(updatedServer);
+
+      // Update status to starting
+      this.updateServerStatus(updatedServer.id, 'starting');
+
+      // Ping immediately to get initial data
+      this.pingServer(updatedServer);
+
+      this.logger.info('Server updated successfully:', updatedServer.name);
+    } catch (error) {
+      this.logger.error('Failed to start updated server:', error);
+      this.updateServerStatus(updatedServer.id, 'offline');
+      throw error;
+    }
   }
 
   // Private methods
@@ -313,7 +365,7 @@ class ServerStateService {
       });
     } catch (error) {
       // Logger setup is optional
-      this.logger.warn('Failed to set phantom logger:', error);
+      this.logger.info('Failed to set phantom logger:', error);
     }
 
     this.logger.info('Starting Phantom instance for:', server.name);
@@ -378,9 +430,7 @@ class ServerStateService {
 
     // Initial ping for all servers
     this.currentServers.forEach(server => {
-      if (server.status !== 'offline') {
-        this.pingServer(server);
-      }
+      this.pingServer(server);
     });
 
     // Start periodic pinging
@@ -429,7 +479,7 @@ class ServerStateService {
       this.updateServerData(server.id, serverData);
       this.updateServerStatus(server.id, 'online');
     } catch (error) {
-      this.logger.error(`Failed to ping server ${server.name}:`, error);
+      this.logger.info(`Failed to ping server ${server.name}:`, error);
       this.updateServerStatus(server.id, 'offline');
     } finally {
       this.pingInProgress.delete(server.id);
@@ -437,25 +487,19 @@ class ServerStateService {
   }
 
   private updateServerStatus(serverId: string, status: ServerStatus): void {
-    const serverIndex = this.currentServers.findIndex(s => s.id === serverId);
-    if (serverIndex === -1) return;
-
-    this.currentServers[serverIndex] = {
-      ...this.currentServers[serverIndex],
-      status,
-    };
+    this.currentServers = this.currentServers.map(server =>
+      server.id === serverId ? {...server, status} : server,
+    );
 
     this.notifyCallbacks();
   }
 
   private updateServerData(serverId: string, data: ServerData): void {
-    const serverIndex = this.currentServers.findIndex(s => s.id === serverId);
-    if (serverIndex === -1) return;
+    console.log('Updating server data:', serverId, data);
 
-    this.currentServers[serverIndex] = {
-      ...this.currentServers[serverIndex],
-      data,
-    };
+    this.currentServers = this.currentServers.map(server =>
+      server.id === serverId ? {...server, data} : server,
+    );
 
     this.notifyCallbacks();
   }

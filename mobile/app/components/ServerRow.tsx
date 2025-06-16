@@ -1,5 +1,12 @@
-import React from 'react';
-import {View, Text, TouchableOpacity} from 'react-native';
+import React, {useState} from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Alert,
+  Modal,
+  Dimensions,
+} from 'react-native';
 import {Server, ServerStatus} from '../services/serverState';
 import {styles} from './ServersScreen.styles';
 import {
@@ -171,12 +178,103 @@ const LastUpdated: React.FC<{timestamp?: number}> = ({timestamp}) => {
 interface ServerRowProps {
   server: Server;
   onPress?: () => void;
+  onDelete?: () => void;
+  onEdit?: () => void;
 }
 
-export const ServerRow: React.FC<ServerRowProps> = ({server, onPress}) => {
+export const ServerRow: React.FC<ServerRowProps> = ({
+  server,
+  onPress,
+  onDelete,
+  onEdit,
+}) => {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
   console.log(
     `Rendering server row for ${server.name} with status ${server.status}`,
   );
+
+  const handleMoreOptions = () => {
+    console.log(`More options pressed for server: ${server.name}`);
+    setIsMenuOpen(true);
+  };
+
+  const handleDelete = () => {
+    setIsMenuOpen(false);
+    Alert.alert(
+      'Delete Server',
+      `Are you sure you want to delete ${server.name}?`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (onDelete) {
+              console.log(`Delete confirmed for server: ${server.name}`);
+              onDelete();
+            }
+          },
+        },
+      ],
+      {cancelable: true},
+    );
+  };
+
+  const handleEdit = () => {
+    setIsMenuOpen(false);
+    if (onEdit) {
+      console.log(`Edit requested for server: ${server.name}`);
+      onEdit();
+    }
+  };
+
+  const handleCancel = () => {
+    setIsMenuOpen(false);
+  };
+
+  if (isMenuOpen) {
+    return (
+      <View style={styles.serverItem}>
+        <View style={styles.serverHeader}>
+          <ServerIcon icon={server.data?.icon} />
+          <View style={styles.serverInfo}>
+            <Text style={styles.serverName}>{server.name}</Text>
+            <Text style={styles.serverAddress}>
+              {server.address}:{server.port}
+            </Text>
+          </View>
+          <StatusIndicator status={server.status} />
+          <TouchableOpacity
+            style={styles.moreOptionsButton}
+            onPress={handleCancel}
+            hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+            <Text style={styles.moreOptionsText}>⋮</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.menuRow}>
+          {onEdit && (
+            <TouchableOpacity style={styles.menuButton} onPress={handleEdit}>
+              <Text style={styles.menuButtonText}>Edit</Text>
+            </TouchableOpacity>
+          )}
+          {onDelete && (
+            <TouchableOpacity
+              style={[styles.menuButton, styles.menuButtonDestructive]}
+              onPress={handleDelete}>
+              <Text style={styles.menuButtonTextDestructive}>Delete</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.menuButton} onPress={handleCancel}>
+            <Text style={styles.menuButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <TouchableOpacity style={styles.serverItem} onPress={onPress}>
@@ -189,6 +287,14 @@ export const ServerRow: React.FC<ServerRowProps> = ({server, onPress}) => {
           </Text>
         </View>
         <StatusIndicator status={server.status} />
+        {(onDelete || onEdit) && (
+          <TouchableOpacity
+            style={styles.moreOptionsButton}
+            onPress={handleMoreOptions}
+            hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+            <Text style={styles.moreOptionsText}>⋮</Text>
+          </TouchableOpacity>
+        )}
       </View>
       <View style={styles.serverDetails}>
         <View style={styles.serverStats}>

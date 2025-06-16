@@ -99,6 +99,26 @@ export const useServers = () => {
     [],
   );
 
+  const updateServer = useCallback(
+    async (
+      serverId: string,
+      updates: Partial<Omit<Server, 'id' | 'status' | 'data'>>,
+    ) => {
+      try {
+        console.log('[useServers] Updating server:', serverId, updates);
+        await serverStateService.updateServer(serverId, updates);
+        setError(null);
+      } catch (err) {
+        console.error('[useServers] Failed to update server:', err);
+        setError(
+          err instanceof Error ? err.message : 'Failed to update server',
+        );
+        throw err;
+      }
+    },
+    [],
+  );
+
   return {
     servers,
     isInitialized,
@@ -106,5 +126,6 @@ export const useServers = () => {
     addServer,
     removeServer,
     updateServerAutoStart,
+    updateServer,
   };
 };

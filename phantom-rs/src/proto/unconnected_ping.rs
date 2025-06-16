@@ -12,14 +12,16 @@ pub const MAGIC: [u8; 16] = [
 pub struct UnconnectedPing {
     pub ping_time: [u8; 8],
     pub magic: [u8; 16],
+    pub client_id: [u8; 8],
 }
 
 impl UnconnectedPing {
     /// Creates a new UnconnectedPing with default values
-    pub fn new() -> Self {
+    pub fn new(client_id: [u8; 8], ping_time: [u8; 8]) -> Self {
         Self {
-            ping_time: [0; 8],
+            ping_time,
             magic: MAGIC,
+            client_id,
         }
     }
 
@@ -35,6 +37,9 @@ impl UnconnectedPing {
 
         // Magic (16 bytes)
         buf.put_slice(&self.magic);
+
+        // Client ID (8 bytes)
+        buf.put_slice(&self.client_id);
 
         buf.freeze()
     }
@@ -60,13 +65,21 @@ impl UnconnectedPing {
         let mut magic = [0u8; 16];
         data.copy_to_slice(&mut magic);
 
-        Ok(Self { ping_time, magic })
+        // Read client ID (8 bytes)
+        let mut client_id = [0u8; 8];
+        data.copy_to_slice(&mut client_id);
+
+        Ok(Self {
+            ping_time,
+            magic,
+            client_id,
+        })
     }
 }
 
 impl Default for UnconnectedPing {
     fn default() -> Self {
-        Self::new()
+        Self::new([0; 8], [0; 8])
     }
 }
 
@@ -96,7 +109,7 @@ mod tests {
     #[test]
     fn test_unconnected_ping_round_trip() {
         // Create a ping packet
-        let mut ping = UnconnectedPing::new();
+        let mut ping = UnconnectedPing::new([0; 8], [0; 8]);
         ping.ping_time = [0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x99, 0xa6];
 
         // Serialize
